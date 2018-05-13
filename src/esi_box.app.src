@@ -1,0 +1,17 @@
+{application, esi_box,
+ [{description, "ESI blackbox application"},
+  {vsn, "0.1.0"},
+  {registered, []},
+  {mod, { esi_box_app, []}},
+  {applications,
+   [kernel,
+    stdlib,
+    crypto
+   ]},
+  {env,[]},
+  {modules, []},
+
+  {maintainers, []},
+  {licenses, ["Apache 2.0"]},
+  {links, []}
+ ]}.
