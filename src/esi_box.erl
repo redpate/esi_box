@@ -18,8 +18,8 @@ start()->
 start(Config)->
   ?MODULE:start_link(Config).
 
-get_auth_url(State)->
-  ?MODULE:call({get_auth_url,State}).
+get_auth_url(State, Scope)->
+  ?MODULE:call({get_auth_url,State, Scope}).
 
 auth(Code)->
   ?MODULE:call({auth,Code}).
@@ -60,8 +60,8 @@ handle_call2(A, {FromPid,_Ref}=_From, ReceiveToken, ServerPid, State)->
   Result = handle_call3(A,State),
   FromPid ! {esi_box, ReceiveToken, Result}.
 
-handle_call3({get_auth_url, StateBin},#{sso_url := SSO_AUTH_ENDPOINT, sso_ets:= ETS}=State)->
-  generate_auth_url(StateBin, SSO_AUTH_ENDPOINT);
+handle_call3({get_auth_url, StateBin, Scope},#{sso_url := SSO_AUTH_ENDPOINT, sso_ets:= ETS}=State)->
+  generate_auth_url(StateBin, SSO_AUTH_ENDPOINT, Scope);
 
 handle_call3({auth, Code},#{sso_url := SSO_AUTH_ENDPOINT, sso_ets:= ETS, master_key:=MasterKey}=State)->
   case catch token_auth(Code, SSO_AUTH_ENDPOINT) of
@@ -186,8 +186,8 @@ update_token(RefreshToken, SSO_AUTH_ENDPOINT)->
   } = jiffy:decode(list_to_binary(Body), [return_maps]),
   #{access_token=>AccessToken, expires_on=>ExpiresIn+os:system_time(second), refresh_token=>RefreshToken}.
 
-generate_auth_url(State, SSO_AUTH_ENDPOINT)->
-  lists:flatten(io_lib:format("~s/?response_type=code&redirect_uri=~s&client_id=~s&scope=~s&state=~s", [SSO_AUTH_ENDPOINT, ?REDIRECT_URL, ?APPLICATION_ID, ?SCOPE, State])).
+generate_auth_url(State, SSO_AUTH_ENDPOINT, Scope)->
+  lists:flatten(io_lib:format("~s/?response_type=code&redirect_uri=~s&client_id=~s&scope=~s&state=~s", [SSO_AUTH_ENDPOINT, ?REDIRECT_URL, ?APPLICATION_ID, Scope, State])).
 
 
 
