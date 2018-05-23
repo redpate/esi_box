@@ -13,13 +13,13 @@
 
 %% Interface
 
-start()->
-  start(#{db_file=>"test.db", master_key=> <<"someweirdcyno">>, timeout => 10000}).
+%start()->
+  %start(#{db_file=>"test.db", master_key=> <<"someweirdcyno">>, timeout => 10000, application_id => ?APPLICATION_ID, auth_token => ?AUTH, scope => ?SCOPE}).
 start(Config)->
   ?MODULE:start_link(Config).
 
-get_auth_url(State, Scope)->
-  ?MODULE:call({get_auth_url,State, Scope}).
+get_auth_url(State)->
+  ?MODULE:call({get_auth_url,State}).
 
 auth(Code)->
   ?MODULE:call({auth,Code}).
@@ -60,11 +60,11 @@ handle_call2(A, {FromPid,_Ref}=_From, ReceiveToken, ServerPid, State)->
   Result = handle_call3(A,State),
   FromPid ! {esi_box, ReceiveToken, Result}.
 
-handle_call3({get_auth_url, StateBin, Scope},#{sso_url := SSO_AUTH_ENDPOINT, sso_ets:= ETS}=State)->
-  generate_auth_url(StateBin, SSO_AUTH_ENDPOINT, Scope);
+handle_call3({get_auth_url, StateBin},#{sso_url := SSO_AUTH_ENDPOINT, sso_ets:= ETS, scope := Scope, application_id := ApplicationID, redirect_url:=RedirectUrl}=State)->
+  generate_auth_url(StateBin, SSO_AUTH_ENDPOINT, Scope, ApplicationID, RedirectUrl);
 
-handle_call3({auth, Code},#{sso_url := SSO_AUTH_ENDPOINT, sso_ets:= ETS, master_key:=MasterKey}=State)->
-  case catch token_auth(Code, SSO_AUTH_ENDPOINT) of
+handle_call3({auth, Code},#{sso_url := SSO_AUTH_ENDPOINT, sso_ets:= ETS, master_key:=MasterKey, auth_token:=AuthToken}=State)->
+  case catch token_auth(Code, SSO_AUTH_ENDPOINT, AuthToken) of
     #{character_name:=CharacterName,
       character_id:=CharacterID,
       access_token:=AccessToken,
@@ -77,7 +77,7 @@ handle_call3({auth, Code},#{sso_url := SSO_AUTH_ENDPOINT, sso_ets:= ETS, master_
         {error, Code , _Reason}
   end;
 
-handle_call3({req, Method, Req, Body, CharacterID},#{sso_url := SSO_AUTH_ENDPOINT, esi_url := ESIUrl, sso_ets:= ETS, master_key:=MasterKey}=State)->
+handle_call3({req, Method, Req, Body, CharacterID},#{sso_url := SSO_AUTH_ENDPOINT, esi_url := ESIUrl, sso_ets:= ETS, master_key:=MasterKey, auth_token := Auth}=State)->
   Res = dets:lookup(?DETS_NAME, CharacterID),
   case Res of
     [{CharacterID, IsValid, EncryptedAccessToken, EncryptedRefreshToken, CharacterName, ExpiresOn}]->
@@ -87,7 +87,7 @@ handle_call3({req, Method, Req, Body, CharacterID},#{sso_url := SSO_AUTH_ENDPOIN
           %%error_logger:info_msg("~p/~p Token expired, refreshing...", [CharacterID, CharacterName]),
           #{access_token := NewAccessToken,
            expires_on := NewExpiresOn,
-           refresh_token := NewRefreshToken} = update_token(decode(EncryptedRefreshToken, MasterKey), SSO_AUTH_ENDPOINT),
+           refresh_token := NewRefreshToken} = update_token(decode(EncryptedRefreshToken, MasterKey), SSO_AUTH_ENDPOINT, Auth),
           ok = dets:insert(?DETS_NAME, {CharacterID, true, encode(NewAccessToken, MasterKey), encode(NewRefreshToken, MasterKey), CharacterName, NewExpiresOn}),
           %%error_logger:info_msg("~p/~p Token updated...", [CharacterID, CharacterName]),
           NewAccessToken;
@@ -140,9 +140,9 @@ Sheme = hd(Schemes),
   version => Version
 }.
 
-token_auth(Code, SSO_AUTH_ENDPOINT)->
+token_auth(Code, SSO_AUTH_ENDPOINT, AuthToken)->
   {ok,{{_,200,_}, _Headers, Body}} = httpc:request(post,
-      {SSO_AUTH_ENDPOINT++"/../token", [{"Authorization" , ?AUTH}],
+      {SSO_AUTH_ENDPOINT++"/../token", [{"Authorization" , AuthToken}],
       "application/x-www-form-urlencoded",
       list_to_binary(io_lib:format("grant_type=authorization_code&code=~s",[Code]))
       }, [], []),
@@ -173,9 +173,9 @@ obtain_character_id(#{token_type:=TokenType, access_token:=AccessToken}=SSO, SSO
           SSO#{character_name=>CharacterName,
             character_id=>CharacterID}.
 
-update_token(RefreshToken, SSO_AUTH_ENDPOINT)->
+update_token(RefreshToken, SSO_AUTH_ENDPOINT, Auth)->
   {ok,{{_,200,_}, _Headers, Body}} = httpc:request(post,
-                    {SSO_AUTH_ENDPOINT++"/../token", [{"Authorization" , ?AUTH}],
+                    {SSO_AUTH_ENDPOINT++"/../token", [{"Authorization" , Auth}],
                     "application/x-www-form-urlencoded",
                     list_to_binary(io_lib:format("grant_type=refresh_token&refresh_token=~s",[RefreshToken]))
                     }, [], []),
@@ -186,8 +186,8 @@ update_token(RefreshToken, SSO_AUTH_ENDPOINT)->
   } = jiffy:decode(list_to_binary(Body), [return_maps]),
   #{access_token=>AccessToken, expires_on=>ExpiresIn+os:system_time(second), refresh_token=>RefreshToken}.
 
-generate_auth_url(State, SSO_AUTH_ENDPOINT, Scope)->
-  lists:flatten(io_lib:format("~s/?response_type=code&redirect_uri=~s&client_id=~s&scope=~s&state=~s", [SSO_AUTH_ENDPOINT, ?REDIRECT_URL, ?APPLICATION_ID, Scope, State])).
+generate_auth_url(State, SSO_AUTH_ENDPOINT, Scope, ApplicationID, RedirectUrl)->
+  lists:flatten(io_lib:format("~s/?response_type=code&redirect_uri=~s&client_id=~s&scope=~s&state=~s", [SSO_AUTH_ENDPOINT, RedirectUrl, ApplicationID, Scope, State])).
 
 
 
