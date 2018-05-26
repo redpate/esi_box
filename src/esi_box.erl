@@ -13,8 +13,8 @@
 
 %% Interface
 
-%start()->
-  %start(#{db_file=>"test.db", master_key=> <<"someweirdcyno">>, timeout => 10000, application_id => ?APPLICATION_ID, auth_token => ?AUTH, scope => ?SCOPE}).
+start()->
+  start(#{db_file=>"test.db", master_key=> <<"someweirdcyno">>, timeout => 10000, application_id => ?APPLICATION_ID, auth_token => ?AUTH, scope => ?SCOPE}).
 start(Config)->
   ?MODULE:start_link(Config).
 
@@ -26,6 +26,8 @@ auth(Code)->
 
 req(Method, Req, Body, CharacterID)->
   ?MODULE:call({req, Method, Req, Body, CharacterID}).
+req(Req, Body)->
+  ?MODULE:call({req, Req, Body}).
 
 %% Gen_server part
 
@@ -77,6 +79,8 @@ handle_call3({auth, Code},#{sso_url := SSO_AUTH_ENDPOINT, sso_ets:= ETS, master_
         {error, Code , _Reason}
   end;
 
+handle_call3({req, Req, Body},#{sso_url := SSO_AUTH_ENDPOINT, esi_url := ESIUrl}=State)->
+  request(Req, Body, ESIUrl);
 handle_call3({req, Method, Req, Body, CharacterID},#{sso_url := SSO_AUTH_ENDPOINT, esi_url := ESIUrl, sso_ets:= ETS, master_key:=MasterKey, auth_token := Auth}=State)->
   Res = dets:lookup(?DETS_NAME, CharacterID),
   case Res of
