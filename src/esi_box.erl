@@ -23,6 +23,8 @@ get_auth_url(State)->
 
 auth(Code)->
   ?MODULE:call({auth,Code}).
+delete(ID)->
+  ?MODULE:call({del,ID}).
 
 req(Method, Req, Body, CharacterID)->
   ?MODULE:call({req, Method, Req, Body, CharacterID}).
@@ -78,6 +80,9 @@ handle_call3({auth, Code},#{sso_url := SSO_AUTH_ENDPOINT, sso_ets:= ETS, master_
       error_logger:error_msg("Failed to verify ~p code (reason - ~p)", [Code, _Reason]),
         {error, Code , _Reason}
   end;
+
+handle_call3({del, ID},State)->
+  dets:delete(?DETS_NAME,ID);
 
 handle_call3({req, Req, Body},#{sso_url := SSO_AUTH_ENDPOINT, esi_url := ESIUrl}=State)->
   request(Req, Body, ESIUrl);
