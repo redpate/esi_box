@@ -213,6 +213,13 @@ request(get, Req, [], ESIUrl, AccessToken)->
   {ok,{_, _,Body}}=httpc:request(get,
                     {lists:flatten(io_lib:format("~s~s?datasource=~s&token=~s", [ESIUrl, Req, ?ESI_DATASOURCE, AccessToken])), []}, [], []),
   jiffy:decode(Body, [return_maps]);
+request(Method, Req, ReqBody, ESIUrl, AccessToken) when is_binary(ReqBody)->
+  {ok,{_, _,Body}}=httpc:request(Method,
+                    {lists:flatten(io_lib:format("~s~s?datasource=~s&token=~s", [ESIUrl, Req, ?ESI_DATASOURCE, AccessToken])), [],
+                    "application/json",
+                    ReqBody
+                    }, [], []),
+  jiffy:decode(Body, [return_maps]);
 request(Method, Req, ReqBody, ESIUrl, AccessToken)->
   {ok,{_, _,Body}}=httpc:request(Method,
                     {lists:flatten(io_lib:format("~s~s?datasource=~s&token=~s", [ESIUrl, Req, ?ESI_DATASOURCE, AccessToken])), [],
