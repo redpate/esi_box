@@ -60,7 +60,7 @@ handle_call(A, From, #{timeout := Timeout}=State)->
   {reply, {ReceiveToken, Timeout}, State}.
 
 handle_call2(A, {FromPid,_Ref}=_From, ReceiveToken, ServerPid, State)->
-  %%error_logger:error_msg("handle_call2~p",[[A, From, ServerPid, State]]),
+  %%error_logger:error_msg("handle_call2~p",[[A, _From, ServerPid, State]]),
   Result = handle_call3(A,State),
   FromPid ! {esi_box, ReceiveToken, Result}.
 
@@ -198,37 +198,36 @@ update_token(RefreshToken, SSO_AUTH_ENDPOINT, Auth)->
 generate_auth_url(State, SSO_AUTH_ENDPOINT, Scope, ApplicationID, RedirectUrl)->
   lists:flatten(io_lib:format("~s/?response_type=code&redirect_uri=~s&client_id=~s&scope=~s&state=~s", [SSO_AUTH_ENDPOINT, RedirectUrl, ApplicationID, Scope, State])).
 
-
-
 compile_request(ReqFormat, Data)->
   lists:flatten(io_lib:format(ReqFormat, Data)).
 
 request(ReqFormat, Data, ESIUrl)->
   {ok,{_, _,Body}}=httpc:request(get,
                     {lists:flatten(io_lib:format("~s~s?datasource=~s", [ESIUrl,compile_request(ReqFormat, Data), ?ESI_DATASOURCE])), []}, [], []),
-  jiffy:decode(Body, [return_maps]).
+  decode(Body).
 request(get, Req, ESIUrl,  SSO)->
   request(get, Req, [], ESIUrl, SSO).
 request(get, Req, [], ESIUrl, AccessToken)->
   {ok,{_, _,Body}}=httpc:request(get,
                     {lists:flatten(io_lib:format("~s~s?datasource=~s&token=~s", [ESIUrl, Req, ?ESI_DATASOURCE, AccessToken])), []}, [], []),
-  jiffy:decode(Body, [return_maps]);
+  decode(Body);
 request(Method, Req, ReqBody, ESIUrl, AccessToken) when is_binary(ReqBody)->
   {ok,{_, _,Body}}=httpc:request(Method,
                     {lists:flatten(io_lib:format("~s~s?datasource=~s&token=~s", [ESIUrl, Req, ?ESI_DATASOURCE, AccessToken])), [],
                     "application/json",
                     ReqBody
                     }, [], []),
-  jiffy:decode(Body, [return_maps]);
+  decode(Body);
 request(Method, Req, ReqBody, ESIUrl, AccessToken)->
   {ok,{_, _,Body}}=httpc:request(Method,
                     {lists:flatten(io_lib:format("~s~s?datasource=~s&token=~s", [ESIUrl, Req, ?ESI_DATASOURCE, AccessToken])), [],
                     "application/x-www-form-urlencoded",
                     ReqBody
                     }, [], []),
-  jiffy:decode(Body, [return_maps]).
+  decode(Body).
 
-
+decode([])->#{};
+decode(A)->jiffy:decode(A, [return_maps]).
 
 
 %% simple crypto
