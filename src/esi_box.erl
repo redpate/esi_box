@@ -56,7 +56,7 @@ call(Req)->
 
 handle_call(A, From, #{timeout := Timeout}=State)->
   ReceiveToken = crypto:strong_rand_bytes(2),
-  spawn_link(?MODULE,handle_call2, [A, From, ReceiveToken, self(), State]),
+  spawn(?MODULE,handle_call2, [A, From, ReceiveToken, self(), State]),
   {reply, {ReceiveToken, Timeout}, State}.
 
 handle_call2(A, {FromPid,_Ref}=_From, ReceiveToken, ServerPid, State)->
@@ -210,6 +210,14 @@ request(get, Req, ESIUrl,  SSO)->
 request(get, Req, [], ESIUrl, AccessToken)->
   {ok,{_, _,Body}}=httpc:request(get,
                     {lists:flatten(io_lib:format("~s~s?datasource=~s&token=~s", [ESIUrl, Req, ?ESI_DATASOURCE, AccessToken])), []}, [], []),
+  decode(Body);
+request(Method, Req, ReqBody, ESIUrl, AccessToken) when is_list(ReqBody)->
+  BodyReq=lists:flatten(lists:foldr(fun({X,Y},Acc)-> ["&"++X++"="++Y|Acc]  end,[],ReqBody)),
+{ok,{_, _,Body}}=httpc:request(Method,
+                    {lists:flatten(io_lib:format("~s~s?datasource=~s&token=~s~s", [ESIUrl, Req, ?ESI_DATASOURCE, AccessToken,BodyReq])), [],
+                    "application/json",
+                    []
+                    }, [], []),
   decode(Body);
 request(Method, Req, ReqBody, ESIUrl, AccessToken) when is_binary(ReqBody)->
   {ok,{_, _,Body}}=httpc:request(Method,
