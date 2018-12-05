@@ -57,4 +57,7 @@ req_3(_Config)->
     ?_assert(Page1 =:= esi_box:req(get, "/contracts/public/10000002/", [{"page", "1"}])),
     ?_assert(Page1 =/= esi_box:req(get, "/contracts/public/10000002/", [{"page", "5"}])),
     %% ask for non-existing page
-    ?_assert([] =:= esi_box:req(get, "/contracts/public/10000002/", [{"page", "500"}])).
+    ?_assert([] =:= esi_box:req(get, "/contracts/public/10000002/", [{"page", "500"}])),
+    %% get type info on another language (abadon)
+    TypeID=24692,
+    ?assertMatch(#{ <<"type_id">> := TypeID, <<"name">> := <<227,130,162,227,131,144,227,131,137,227,131,179>>}, esi_box:req(get, "/universe/types/~p/", {[TypeID],[{"language", "ja"}]})).
