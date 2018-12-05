@@ -223,11 +223,13 @@ request(ReqFormat, Data, ESIUrl)->
                     {lists:flatten(io_lib:format("~s~s?datasource=~s", [ESIUrl,compile_request(ReqFormat, Data), ?ESI_DATASOURCE])), []}, [], []),
   decode(Body).
 request(get, Req, ESIUrl,  SSO)->
-  request(get, Req, [], ESIUrl, SSO).
-request(get, Req, ReqBody, ESIUrl, AccessToken)->
+  request(get, Req, {<<>>, []}, ESIUrl, SSO).
+request(get, Req, ReqBody, ESIUrl, AccessToken) when is_list(ReqBody)->
+  request(get, Req, {[], ReqBody}, ESIUrl, AccessToken);
+request(get, ReqFormat, {UriData, ReqBody}, ESIUrl, AccessToken)->
   BodyReq=lists:flatten(lists:foldr(fun({X,Y},Acc)-> ["&"++X++"="++Y|Acc]  end,[],ReqBody)),
   {ok,{_, _,Body}}=httpc:request(get,
-                    {lists:flatten(io_lib:format("~s~s?datasource=~s&token=~s~s", [ESIUrl, Req, ?ESI_DATASOURCE, AccessToken, BodyReq])), []}, [], []),
+                    {lists:flatten(io_lib:format("~s~s?datasource=~s&token=~s~s", [ESIUrl, compile_request(ReqFormat, UriData), ?ESI_DATASOURCE, AccessToken, BodyReq])), []}, [], []),
   decode(Body);
 request(Method, Req, ReqBody, ESIUrl, AccessToken) when is_list(ReqBody)->
   BodyReq=lists:flatten(lists:foldr(fun({X,Y},Acc)-> ["&"++X++"="++Y|Acc]  end,[],ReqBody)),
