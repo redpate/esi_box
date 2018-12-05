@@ -1,12 +1,25 @@
 -module(esi_box).
 
--compile(export_all).
 -include("config.hrl").
 
 -behaviour(gen_server).
 
+%% api export
 
--define(DETS_NAME, esi_bb).
+-export([start/0, start/1]).
+-export([get_auth_url/1, auth/1, delete/1]).
+-export([req/2, req/3, req/4]).
+
+%% low level api export
+
+-export([call/1, start_link/1]).
+
+%% server callbacks export
+
+-export([init/1, handle_call/3, handle_call2/5]).
+
+-export([handle_cast/2, handle_info/2, terminate/2, code_change/3]).
+
 
 %% ESI token structure is simple and not worth creating record
 %% ESI Record  - {CharacterID, IsValid, AccessToken, RefreshToken, CharacterName}
@@ -14,7 +27,7 @@
 %% Interface
 
 start()->
-  start(#{db_file=>"test.db", master_key=> <<"someweirdcyno">>, timeout => 10000, application_id => ?APPLICATION_ID, auth_token => ?AUTH, scope => ?SCOPE}).
+  start(?DEFAULT_CONFIG).
 start(Config)->
   ?MODULE:start_link(Config).
 
@@ -26,15 +39,17 @@ auth(Code)->
 delete(ID)->
   ?MODULE:call({del,ID}).
 
-req(Method, Req, Body, CharacterID)->
-  ?MODULE:call({req, Method, Req, Body, CharacterID}).
 req(Req, Body)->
   ?MODULE:call({req, Req, Body}).
+req(Method, Req, Body)->
+  ?MODULE:call({req, Method, Req, Body}).
+req(Method, Req, Body, CharacterID)->
+  ?MODULE:call({req, Method, Req, Body, CharacterID}).
 
 %% Gen_server part
 
 start_link(Args) ->
-  gen_server:start_link({local, ?MODULE}, ?MODULE, Args, []).
+  gen_server:start_link({local, ?MODULE}, ?MODULE, Args, []). %% only one server, kinda bottleneck
 
 init(#{db_file := DetsFileName, master_key:=_MasterKey, timeout := Timeout}=Args)->
   {ok, ?DETS_NAME} = dets:open_file(?DETS_NAME, [{access,read_write},{auto_save,60000},{file, DetsFileName}]),
@@ -44,15 +59,15 @@ init(#{db_file := DetsFileName, master_key:=_MasterKey, timeout := Timeout}=Args
   %% no check for valid MasterKey, for wrong one there gona be no valid esi tokens.
   {ok,maps:merge(get_swaggger_info(), Args#{master_key=>MasterKey, sso_ets => ETS})}.
 
-call(Req)->
-    {ReceiveToken, Timeout}= gen_server:call(?MODULE, Req),
-    receive
-      {esi_box, ReceiveToken, Result}->
-        Result
-    after
-      Timeout ->
-          timeout
-    end.
+call(Req)-> %% blocking call to server, TODO cast variant
+  {ReceiveToken, Timeout}= gen_server:call(?MODULE, Req),
+  receive
+    {esi_box, ReceiveToken, Result}->
+      Result
+  after
+    Timeout ->
+      timeout
+  end.
 
 handle_call(A, From, #{timeout := Timeout}=State)->
   ReceiveToken = crypto:strong_rand_bytes(2),
@@ -86,6 +101,8 @@ handle_call3({del, ID},State)->
 
 handle_call3({req, Req, Body},#{sso_url := SSO_AUTH_ENDPOINT, esi_url := ESIUrl}=State)->
   request(Req, Body, ESIUrl);
+handle_call3({req, Method, Req, Body},#{sso_url := SSO_AUTH_ENDPOINT, esi_url := ESIUrl, sso_ets:= ETS, master_key:=MasterKey, auth_token := Auth}=State)->
+  request(Method, Req, Body, ESIUrl, "");
 handle_call3({req, Method, Req, Body, CharacterID},#{sso_url := SSO_AUTH_ENDPOINT, esi_url := ESIUrl, sso_ets:= ETS, master_key:=MasterKey, auth_token := Auth}=State)->
   Res = dets:lookup(?DETS_NAME, CharacterID),
   case Res of
@@ -207,9 +224,10 @@ request(ReqFormat, Data, ESIUrl)->
   decode(Body).
 request(get, Req, ESIUrl,  SSO)->
   request(get, Req, [], ESIUrl, SSO).
-request(get, Req, [], ESIUrl, AccessToken)->
+request(get, Req, ReqBody, ESIUrl, AccessToken)->
+  BodyReq=lists:flatten(lists:foldr(fun({X,Y},Acc)-> ["&"++X++"="++Y|Acc]  end,[],ReqBody)),
   {ok,{_, _,Body}}=httpc:request(get,
-                    {lists:flatten(io_lib:format("~s~s?datasource=~s&token=~s", [ESIUrl, Req, ?ESI_DATASOURCE, AccessToken])), []}, [], []),
+                    {lists:flatten(io_lib:format("~s~s?datasource=~s&token=~s~s", [ESIUrl, Req, ?ESI_DATASOURCE, AccessToken, BodyReq])), []}, [], []),
   decode(Body);
 request(Method, Req, ReqBody, ESIUrl, AccessToken) when is_list(ReqBody)->
   BodyReq=lists:flatten(lists:foldr(fun({X,Y},Acc)-> ["&"++X++"="++Y|Acc]  end,[],ReqBody)),
