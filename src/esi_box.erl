@@ -101,11 +101,7 @@ handle_call3({del, ID},State)->
 
 handle_call3({req, Req, Body},#{sso_url := SSO_AUTH_ENDPOINT, esi_url := ESIUrl}=State)->
   request(Req, Body, ESIUrl);
-<<<<<<< HEAD
 handle_call3({req, Method, Req, Body},#{sso_url := SSO_AUTH_ENDPOINT, esi_url := ESIUrl, sso_ets:= ETS, master_key:=MasterKey, auth_token := Auth}=State)->
-=======
-handle_call3({req, Method, Req, Body},#{sso_url := SSO_AUTH_ENDPOINT, esi_url := ESIUrl}=State)->
->>>>>>> 788007bcb4aa58384a9d39e470142fc7a8a6344e
   request(Method, Req, Body, ESIUrl, "");
 handle_call3({req, Method, Req, Body, CharacterID},#{sso_url := SSO_AUTH_ENDPOINT, esi_url := ESIUrl, sso_ets:= ETS, master_key:=MasterKey, auth_token := Auth}=State)->
   Res = dets:lookup(?DETS_NAME, CharacterID),
