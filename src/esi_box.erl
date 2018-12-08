@@ -82,8 +82,8 @@ handle_call2(A, {FromPid,_Ref}=_From, ReceiveToken, ServerPid, State)->
 handle_call3({get_auth_url, StateBin},#{sso_url := SSO_AUTH_ENDPOINT, sso_ets:= ETS, scope := Scope, application_id := ApplicationID, redirect_url:=RedirectUrl}=State)->
   generate_auth_url(StateBin, SSO_AUTH_ENDPOINT, Scope, ApplicationID, RedirectUrl);
 
-handle_call3({auth, Code},#{sso_url := SSO_AUTH_ENDPOINT, sso_ets:= ETS, master_key:=MasterKey, auth_token:=AuthToken}=State)->
-  case catch token_auth(Code, SSO_AUTH_ENDPOINT, AuthToken) of
+handle_call3({auth, Code},#{sso_url := SSO_AUTH_ENDPOINT, sso_ets:= ETS, application_id := ClientId, master_key:=MasterKey, auth_token:=AuthToken}=State)->
+  case catch token_auth(Code, SSO_AUTH_ENDPOINT, ClientId, AuthToken) of
     #{character_name:=CharacterName,
       character_id:=CharacterID,
       access_token:=AccessToken,
@@ -103,7 +103,7 @@ handle_call3({req, Req, Body},#{sso_url := SSO_AUTH_ENDPOINT, esi_url := ESIUrl}
   request(Req, Body, ESIUrl);
 handle_call3({req, Method, Req, Body},#{sso_url := SSO_AUTH_ENDPOINT, esi_url := ESIUrl, sso_ets:= ETS, master_key:=MasterKey, auth_token := Auth}=State)->
   request(Method, Req, Body, ESIUrl, "");
-handle_call3({req, Method, Req, Body, CharacterID},#{sso_url := SSO_AUTH_ENDPOINT, esi_url := ESIUrl, sso_ets:= ETS, master_key:=MasterKey, auth_token := Auth}=State)->
+handle_call3({req, Method, Req, Body, CharacterID},#{sso_url := SSO_AUTH_ENDPOINT, esi_url := ESIUrl, sso_ets:= ETS, master_key:=MasterKey, auth_token := Auth,  application_id := ClientId}=State)->
   Res = dets:lookup(?DETS_NAME, CharacterID),
   case Res of
     [{CharacterID, IsValid, EncryptedAccessToken, EncryptedRefreshToken, CharacterName, ExpiresOn}]->
@@ -113,7 +113,7 @@ handle_call3({req, Method, Req, Body, CharacterID},#{sso_url := SSO_AUTH_ENDPOIN
           %%error_logger:info_msg("~p/~p Token expired, refreshing...", [CharacterID, CharacterName]),
           #{access_token := NewAccessToken,
            expires_on := NewExpiresOn,
-           refresh_token := NewRefreshToken} = update_token(decode(EncryptedRefreshToken, MasterKey), SSO_AUTH_ENDPOINT, Auth),
+           refresh_token := NewRefreshToken}  = update_token(decode(EncryptedRefreshToken, MasterKey), SSO_AUTH_ENDPOINT, Auth, ClientId),
           ok = dets:insert(?DETS_NAME, {CharacterID, true, encode(NewAccessToken, MasterKey), encode(NewRefreshToken, MasterKey), CharacterName, NewExpiresOn}),
           %%error_logger:info_msg("~p/~p Token updated...", [CharacterID, CharacterName]),
           NewAccessToken;
@@ -166,11 +166,13 @@ Sheme = hd(Schemes),
   version => Version
 }.
 
-token_auth(Code, SSO_AUTH_ENDPOINT, AuthToken)->
+token_auth(Code, SSO_AUTH_ENDPOINT, ClientId, AuthToken)->
   {ok,{{_,200,_}, _Headers, Body}} = httpc:request(post,
-      {SSO_AUTH_ENDPOINT++"/../token", [{"Authorization" , AuthToken}],
-      "application/x-www-form-urlencoded",
-      list_to_binary(io_lib:format("grant_type=authorization_code&code=~s",[Code]))
+      {SSO_AUTH_ENDPOINT++"/../token", [{"Authorization" ,
+           lists:flatten(io_lib:format("~s ~s", ["Basic", AuthToken]))
+      }, {"User-Agent", "teki"}],
+      "application/json",
+      jiffy:encode(#{ grant_type => <<"authorization_code">>, code => Code, client => list_to_binary(ClientId)})
       }, [], []),
   #{
     <<"access_token">> := AccessToken,
@@ -178,39 +180,49 @@ token_auth(Code, SSO_AUTH_ENDPOINT, AuthToken)->
     <<"expires_in">> := ExpiresIn,
     <<"refresh_token">> := RefreshToken
   } = jiffy:decode(list_to_binary(Body), [return_maps]),
-  RequestTokenResponse= obtain_character_id(#{
-      access_token=>AccessToken,
-      token_type=>TokenType,
-      expires_on=>ExpiresIn+os:system_time(second),
-      refresh_token=>RefreshToken}, SSO_AUTH_ENDPOINT),
-  ResultRecord = RequestTokenResponse#{id => crypto:hash(md5, Code)}.
+  RequestTokenResponse= obtain_character_id(AccessToken),
+  RequestTokenResponse#{
+    token_type => TokenType,
+    access_token => AccessToken,
+    expires_on =>  ExpiresIn+os:system_time(second),
+    refresh_token => RefreshToken,
+    id => crypto:hash(sha256, Code)}.
 
-obtain_character_id(#{token_type:=TokenType, access_token:=AccessToken}=SSO, SSO_AUTH_ENDPOINT)->
-  {ok,{{_,200,_}, _Headers, Body}} = httpc:request(get,
-    {SSO_AUTH_ENDPOINT++"/../verify",
-      [{"Authorization" ,
-          io_lib:format("~s ~s", [TokenType, AccessToken])
-      }]
-    }, [], []),
-   #{
-     <<"CharacterName">> := CharacterName,
-     <<"CharacterID">> := CharacterID
-     }= jiffy:decode(list_to_binary(Body), [return_maps]),
-          SSO#{character_name=>CharacterName,
-            character_id=>CharacterID}.
+obtain_character_id(AccessToken)->
+  [_Header, Body, _Sig]=binary:split(AccessToken, <<$.>>, [global]),
+   #{<<"name">> := CharacterName,
+     <<"exp">> := Expires,
+     <<"scp">> := Scope,
+     <<"sub">> := _CharacterID
+    }= jiffy:decode(base64:decode(Body), [return_maps]), %% no signature verifing, if someone messed up https session we are already fucked
+    <<"CHARACTER:EVE:", CharacterID/binary>> = _CharacterID,
+    #{
+      character_name => CharacterName,
+      character_id => CharacterID,
+      expires_in => Expires,
+      scope => Scope
+    }.
 
-update_token(RefreshToken, SSO_AUTH_ENDPOINT, Auth)->
+update_token(RefreshToken, SSO_AUTH_ENDPOINT, Auth,  ClientId)->
   {ok,{{_,200,_}, _Headers, Body}} = httpc:request(post,
-                    {SSO_AUTH_ENDPOINT++"/../token", [{"Authorization" , Auth}],
-                    "application/x-www-form-urlencoded",
-                    list_to_binary(io_lib:format("grant_type=refresh_token&refresh_token=~s",[RefreshToken]))
+                    {SSO_AUTH_ENDPOINT++"/../token", [{"Authorization" ,
+                         lists:flatten(io_lib:format("~s ~s", ["Basic", Auth]))
+                    }, {"User-Agent", "teki"}],
+                    "application/json",
+                    jiffy:encode(#{ grant_type => <<"refresh_token">>, refresh_token => RefreshToken, client => list_to_binary(ClientId)})
                     }, [], []),
   #{
     <<"access_token">> := AccessToken,
-    <<"refresh_token">> := RefreshToken,
-    <<"expires_in">> := ExpiresIn
+    <<"token_type">> := TokenType,
+    <<"expires_in">> := ExpiresIn,
+    <<"refresh_token">> := RefreshToken
   } = jiffy:decode(list_to_binary(Body), [return_maps]),
-  #{access_token=>AccessToken, expires_on=>ExpiresIn+os:system_time(second), refresh_token=>RefreshToken}.
+  RequestTokenResponse= obtain_character_id(AccessToken),
+  RequestTokenResponse#{
+    token_type => TokenType,
+    access_token => AccessToken,
+    expires_on => ExpiresIn+os:system_time(second),
+    refresh_token => RefreshToken}.
 
 generate_auth_url(State, SSO_AUTH_ENDPOINT, Scope, ApplicationID, RedirectUrl)->
   lists:flatten(io_lib:format("~s/?response_type=code&redirect_uri=~s&client_id=~s&scope=~s&state=~s", [SSO_AUTH_ENDPOINT, RedirectUrl, ApplicationID, Scope, State])).
@@ -229,26 +241,36 @@ request(get, Req, ReqBody, ESIUrl, AccessToken) when is_list(ReqBody)->
 request(get, ReqFormat, {UriData, ReqBody}, ESIUrl, AccessToken)->
   BodyReq=lists:flatten(lists:foldr(fun({X,Y},Acc)-> ["&"++X++"="++Y|Acc]  end,[],ReqBody)),
   {ok,{_, _,Body}}=httpc:request(get,
-                    {lists:flatten(io_lib:format("~s~s?datasource=~s&token=~s~s", [ESIUrl, compile_request(ReqFormat, UriData), ?ESI_DATASOURCE, AccessToken, BodyReq])), []}, [], []),
+                    {lists:flatten(io_lib:format("~s~s?datasource=~s~s", [ESIUrl, compile_request(ReqFormat, UriData), ?ESI_DATASOURCE, BodyReq])),
+                    [{"Authorization" ,
+                         lists:flatten(io_lib:format("~s ~s", ["Bearer", AccessToken]))
+                    }, {"User-Agent", "teki"}]
+                    }, [], []),
   decode(Body);
 request(Method, Req, ReqBody, ESIUrl, AccessToken) when is_list(ReqBody)->
   BodyReq=lists:flatten(lists:foldr(fun({X,Y},Acc)-> ["&"++X++"="++Y|Acc]  end,[],ReqBody)),
 {ok,{_, _,Body}}=httpc:request(Method,
-                    {lists:flatten(io_lib:format("~s~s?datasource=~s&token=~s~s", [ESIUrl, Req, ?ESI_DATASOURCE, AccessToken,BodyReq])), [],
+                    {lists:flatten(io_lib:format("~s~s?datasource=~s~s", [ESIUrl, Req, ?ESI_DATASOURCE,BodyReq])), [{"Authorization" ,
+                         lists:flatten(io_lib:format("~s ~s", ["Bearer", AccessToken]))
+                    }, {"User-Agent", "teki"}],
                     "application/json",
                     []
                     }, [], []),
   decode(Body);
 request(Method, Req, ReqBody, ESIUrl, AccessToken) when is_binary(ReqBody)->
   {ok,{_, _,Body}}=httpc:request(Method,
-                    {lists:flatten(io_lib:format("~s~s?datasource=~s&token=~s", [ESIUrl, Req, ?ESI_DATASOURCE, AccessToken])), [],
+                    {lists:flatten(io_lib:format("~s~s?datasource=~s", [ESIUrl, Req, ?ESI_DATASOURCE])), [{"Authorization" ,
+                         lists:flatten(io_lib:format("~s ~s", ["Bearer", AccessToken]))
+                    }, {"User-Agent", "teki"}],
                     "application/json",
                     ReqBody
                     }, [], []),
   decode(Body);
 request(Method, Req, ReqBody, ESIUrl, AccessToken)->
   {ok,{_, _,Body}}=httpc:request(Method,
-                    {lists:flatten(io_lib:format("~s~s?datasource=~s&token=~s", [ESIUrl, Req, ?ESI_DATASOURCE, AccessToken])), [],
+                    {lists:flatten(io_lib:format("~s~s?datasource=~s", [ESIUrl, Req, ?ESI_DATASOURCE])), [{"Authorization" ,
+                         lists:flatten(io_lib:format("~s ~s", ["Bearer", AccessToken]))
+                    }, {"User-Agent", "teki"}],
                     "application/x-www-form-urlencoded",
                     ReqBody
                     }, [], []),
