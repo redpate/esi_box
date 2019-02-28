@@ -8,11 +8,11 @@
 
 -export([start/0, start/1]).
 -export([get_auth_url/1, auth/1, delete/1]).
--export([req/2, req/3, req/4]).
+-export([req/2, req/3, req/4, rreq/2, rreq/3, rreq/4, hreq/2, hreq/3, hreq/4]).
 
 %% low level api export
 
--export([call/1, start_link/1]).
+-export([hcall/1, call/1, cast/1, start_link/1]).
 
 %% server callbacks export
 
@@ -32,19 +32,37 @@ start(Config)->
   ?MODULE:start_link(Config).
 
 get_auth_url(State)->
-  ?MODULE:call({get_auth_url,State}).
+  ?MODULE:hcall({get_auth_url,State}).
 
 auth(Code)->
-  ?MODULE:call({auth,Code}).
+  ?MODULE:hcall({auth,Code}).
 delete(ID)->
-  ?MODULE:call({del,ID}).
+  ?MODULE:hcall({del,ID}).
 
+%% Blocking request with no headers returned (for compatibility with old projects)
 req(Req, Body)->
   ?MODULE:call({req, Req, Body}).
 req(Method, Req, Body)->
   ?MODULE:call({req, Method, Req, Body}).
 req(Method, Req, Body, CharacterID)->
   ?MODULE:call({req, Method, Req, Body, CharacterID}).
+
+%% Blocking request with headers returned
+
+rreq(Req, Body)->
+  ?MODULE:hcall({req, Req, Body}).
+rreq(Method, Req, Body)->
+  ?MODULE:hcall({req, Method, Req, Body}).
+rreq(Method, Req, Body, CharacterID)->
+    ?MODULE:hcall({req, Method, Req, Body, CharacterID}).
+
+%% Nonblocking request with headers returned. Handle returned message by youself
+hreq(Req, Body)->
+  ?MODULE:cast({req, Req, Body}).
+hreq(Method, Req, Body)->
+  ?MODULE:cast({req, Method, Req, Body}).
+hreq(Method, Req, Body, CharacterID)->
+    ?MODULE:cast({req, Method, Req, Body, CharacterID}).
 
 %% Gen_server part
 
@@ -59,7 +77,19 @@ init(#{db_file := DetsFileName, master_key:=_MasterKey, timeout := Timeout}=Args
   %% no check for valid MasterKey, for wrong one there gona be no valid esi tokens.
   {ok,maps:merge(get_swaggger_info(), Args#{master_key=>MasterKey, sso_ets => ETS})}.
 
+cast(Req)-> %% nonblocking request (returned with headers)
+  {ReceiveToken, Timeout}= gen_server:call(?MODULE, Req).
+
 call(Req)-> %% blocking call to server, TODO cast variant
+  {ReceiveToken, Timeout}= gen_server:call(?MODULE, Req),
+  receive
+    {esi_box, ReceiveToken, {_Header,Result}}->
+      Result
+  after
+    Timeout ->
+      timeout
+  end.
+hcall(Req)-> %% blocking call to server, TODO cast variant
   {ReceiveToken, Timeout}= gen_server:call(?MODULE, Req),
   receive
     {esi_box, ReceiveToken, Result}->
@@ -126,6 +156,8 @@ handle_call3({req, Method, Req, Body, CharacterID},#{sso_url := SSO_AUTH_ENDPOIN
       {error, CharacterID , _Reason}
   end;
 
+handle_call3(get,_State)->
+  _State;
 handle_call3(_,_State)->
   unknown.
 
@@ -167,10 +199,11 @@ Sheme = hd(Schemes),
 }.
 
 token_auth(Code, SSO_AUTH_ENDPOINT, ClientId, AuthToken)->
+  error_logger:info_msg("{Code, SSO_AUTH_ENDPOINT, ClientId, AuthToken}=~p", [{Code, SSO_AUTH_ENDPOINT, ClientId, AuthToken}]),
   {ok,{{_,200,_}, _Headers, Body}} = httpc:request(post,
       {SSO_AUTH_ENDPOINT++"/../token", [{"Authorization" ,
            lists:flatten(io_lib:format("~s ~s", ["Basic", AuthToken]))
-      }, {"User-Agent", "teki"}],
+      }, {"User-Agent", "FRACKING"}],
       "application/json",
       jiffy:encode(#{ grant_type => <<"authorization_code">>, code => Code, client => list_to_binary(ClientId)})
       }, [], []),
@@ -189,12 +222,12 @@ token_auth(Code, SSO_AUTH_ENDPOINT, ClientId, AuthToken)->
     id => crypto:hash(sha256, Code)}.
 
 obtain_character_id(AccessToken)->
-  [_Header, Body, _Sig]=binary:split(AccessToken, <<$.>>, [global]),
+  [_Header, Body, _Sig]=A=binary:split(AccessToken, <<$.>>, [global]),
    #{<<"name">> := CharacterName,
      <<"exp">> := Expires,
      <<"scp">> := Scope,
      <<"sub">> := _CharacterID
-    }= jiffy:decode(base64:decode(Body), [return_maps]), %% no signature verifing, if someone messed up https session we are already fucked
+    }= jiffy:decode(base64:decode(restore_base64(Body)), [return_maps]), %% no signature verifing, if someone messed up https session we are already fucked
     <<"CHARACTER:EVE:", CharacterID/binary>> = _CharacterID,
     #{
       character_name => CharacterName,
@@ -202,6 +235,16 @@ obtain_character_id(AccessToken)->
       expires_in => Expires,
       scope => Scope
     }.
+
+restore_base64(Body)->
+  case (size(Body) rem 4) of
+    0->
+      Body;
+    N->
+      Filler = binary:copy(<<"=">>, 4-N),
+      <<Body/binary, Filler/binary>>
+  end.
+
 
 update_token(RefreshToken, SSO_AUTH_ENDPOINT, Auth,  ClientId)->
   {ok,{{_,200,_}, _Headers, Body}} = httpc:request(post,
@@ -240,41 +283,41 @@ request(get, Req, ReqBody, ESIUrl, AccessToken) when is_list(ReqBody)->
   request(get, Req, {[], ReqBody}, ESIUrl, AccessToken);
 request(get, ReqFormat, {UriData, ReqBody}, ESIUrl, AccessToken)->
   BodyReq=lists:flatten(lists:foldr(fun({X,Y},Acc)-> ["&"++X++"="++Y|Acc]  end,[],ReqBody)),
-  {ok,{_, _,Body}}=httpc:request(get,
+  {ok,{_, Header,Body}}=httpc:request(get,
                     {lists:flatten(io_lib:format("~s~s?datasource=~s~s", [ESIUrl, compile_request(ReqFormat, UriData), ?ESI_DATASOURCE, BodyReq])),
                     [{"Authorization" ,
                          lists:flatten(io_lib:format("~s ~s", ["Bearer", AccessToken]))
                     }, {"User-Agent", "teki"}]
                     }, [], []),
-  decode(Body);
+  {Header,decode(Body)};
 request(Method, Req, ReqBody, ESIUrl, AccessToken) when is_list(ReqBody)->
   BodyReq=lists:flatten(lists:foldr(fun({X,Y},Acc)-> ["&"++X++"="++Y|Acc]  end,[],ReqBody)),
-{ok,{_, _,Body}}=httpc:request(Method,
+{ok,{_, Header,Body}}=httpc:request(Method,
                     {lists:flatten(io_lib:format("~s~s?datasource=~s~s", [ESIUrl, Req, ?ESI_DATASOURCE,BodyReq])), [{"Authorization" ,
                          lists:flatten(io_lib:format("~s ~s", ["Bearer", AccessToken]))
                     }, {"User-Agent", "teki"}],
                     "application/json",
                     []
                     }, [], []),
-  decode(Body);
+  {Header,decode(Body)};
 request(Method, Req, ReqBody, ESIUrl, AccessToken) when is_binary(ReqBody)->
-  {ok,{_, _,Body}}=httpc:request(Method,
+  {ok,{_, Header,Body}}=httpc:request(Method,
                     {lists:flatten(io_lib:format("~s~s?datasource=~s", [ESIUrl, Req, ?ESI_DATASOURCE])), [{"Authorization" ,
                          lists:flatten(io_lib:format("~s ~s", ["Bearer", AccessToken]))
                     }, {"User-Agent", "teki"}],
                     "application/json",
                     ReqBody
                     }, [], []),
-  decode(Body);
+  {Header,decode(Body)};
 request(Method, Req, ReqBody, ESIUrl, AccessToken)->
-  {ok,{_, _,Body}}=httpc:request(Method,
+  {ok,{_, Header,Body}}=httpc:request(Method,
                     {lists:flatten(io_lib:format("~s~s?datasource=~s", [ESIUrl, Req, ?ESI_DATASOURCE])), [{"Authorization" ,
                          lists:flatten(io_lib:format("~s ~s", ["Bearer", AccessToken]))
                     }, {"User-Agent", "teki"}],
                     "application/x-www-form-urlencoded",
                     ReqBody
                     }, [], []),
-  decode(Body).
+  {Header,decode(Body)}.
 
 decode([])->#{};
 decode(A)->jiffy:decode(A, [return_maps]).
