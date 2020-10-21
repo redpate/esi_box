@@ -274,9 +274,9 @@ compile_request(ReqFormat, Data)->
   lists:flatten(io_lib:format(ReqFormat, Data)).
 
 request(ReqFormat, Data, ESIUrl)->
-  {ok,{_, _,Body}}=httpc:request(get,
+  {ok,{_, Header,Body}}=httpc:request(get,
                     {lists:flatten(io_lib:format("~s~s?datasource=~s", [ESIUrl,compile_request(ReqFormat, Data), ?ESI_DATASOURCE])), []}, [], []),
-  decode(Body).
+  {Header, decode(Body)}.
 request(get, Req, ESIUrl,  SSO)->
   request(get, Req, {<<>>, []}, ESIUrl, SSO).
 request(get, Req, ReqBody, ESIUrl, AccessToken) when is_list(ReqBody)->
